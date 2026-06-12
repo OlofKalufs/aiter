@@ -95,7 +95,6 @@ def unshuffle_weight_gfx1250(w_buffer_slice, BLOCK_N, NATIVE_BLOCK_K_W):
 
 @gluon.jit(
     launch_metadata=matmul_launch_metadata,
-    loop_carried_load_percent=0,
     do_not_specialize=["num_tokens"],
 )
 def _moe_gemm_a8w4_decode(
@@ -161,11 +160,11 @@ def _moe_gemm_a8w4_decode(
     MX_PACK_DIVISOR: gl.constexpr = 32
 
     if GatherIndx is None:
-        NUM_TDM_OPS: gl.constexpr = 1 # async_loads fuse into 1 TDM op
+        NUM_TDM_OPS: gl.constexpr = 1  # async_loads fuse into 1 TDM op
     elif X_SCALE_TDM:
-        NUM_TDM_OPS: gl.constexpr = 5 # x + x_scales int16 TDM gathers
+        NUM_TDM_OPS: gl.constexpr = 5  # x + x_scales int16 TDM gathers
     else:
-        NUM_TDM_OPS: gl.constexpr = 3 # x_scales use async_copy
+        NUM_TDM_OPS: gl.constexpr = 3  # x_scales use async_copy
     w_type: gl.constexpr = W.dtype.element_ty
     gl.static_assert(w_type == gl.uint8, "mx_weight_ptr must be uint8 or fp8")
     gl.static_assert(
@@ -688,7 +687,7 @@ def _moe_gemm_a8w4_decode(
     gl.amd.gfx1250.tdm.async_wait(0)
 
 
-@gluon.jit(launch_metadata=matmul_launch_metadata, loop_carried_load_percent=0)
+@gluon.jit(launch_metadata=matmul_launch_metadata)
 def _moe_gemm_a8w4_prefill(
     Y,
     stride_y_m,
@@ -752,11 +751,11 @@ def _moe_gemm_a8w4_prefill(
     MX_PACK_DIVISOR: gl.constexpr = 32
 
     if GatherIndx is None:
-        NUM_TDM_OPS: gl.constexpr = 1 # async_loads fuse into 1 TDM op
+        NUM_TDM_OPS: gl.constexpr = 1  # async_loads fuse into 1 TDM op
     elif X_SCALE_TDM:
-        NUM_TDM_OPS: gl.constexpr = 5 # x + x_scales int16 TDM gathers
+        NUM_TDM_OPS: gl.constexpr = 5  # x + x_scales int16 TDM gathers
     else:
-        NUM_TDM_OPS: gl.constexpr = 3 # x_scales use async_copy
+        NUM_TDM_OPS: gl.constexpr = 3  # x_scales use async_copy
     w_type: gl.constexpr = W.dtype.element_ty
     gl.static_assert(w_type == gl.uint8, "mx_weight_ptr must be uint8 or fp8")
     gl.static_assert(
