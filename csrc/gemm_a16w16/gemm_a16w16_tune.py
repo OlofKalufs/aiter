@@ -672,7 +672,10 @@ class GemmA16W16Tuner(GemmCommonTuner):
                 continue
             if _opus_kid_rejects_bias(k_inst, has_bias):
                 continue
-            if k_inst.kernel_tag == "a16w16_flatmm_splitk":
+            if k_inst.kernel_tag in (
+                "a16w16_flatmm_splitk",
+                "a16w16_cluster_tdm_splitk_ws",
+            ):
                 splitK_range = _opus_candidate_splitK(M, N, K, 1, cu_num, k_inst)
             else:
                 splitK_range = [0]
