@@ -46,9 +46,87 @@ except Exception:
     _Use_2d_instr_shape_mfma_layout = tl.constexpr(False)
 
 
+# Ring-buffer depth for the gfx1250 preshuffle indexer K pipeline. Depth 2 is a
+# plain double buffer (one TDM load in flight); depth 3 lets the K TDM latency be
+# hidden behind two iterations of compute. Tunable here; each buffer costs
+# KVBlockSize * HiddenDim bytes of LDS, so depth 3 stays well within the 64KB
+# budget for the usual KVBlockSize (16/32/64/128).
+_GFX1250_NUM_BUFFERS = tl.constexpr(3)
+
+
 @triton.jit
 def _sum_combine(a, b):
     return a + b
+
+
+@gluon.jit
+def _gfx1250_unswizzle_k(
+    kv_buf,
+    KVBlockSize: gl.constexpr,
+    HiddenDim: gl.constexpr,
+    layout: gl.constexpr,
+):
+    # Undo the preshuffle layout of a K block staged in shared memory and load it
+    # into registers with the dot-operand `layout`. Kept as a helper so the 5D
+    # reshape/permute address math is emitted from a single fixed-layout site
+    # instead of being re-derived inline every loop iteration.
+    K_WIDTH: gl.constexpr = 16
+    return (
+        kv_buf.reshape(
+            (
+                KVBlockSize // 16,
+                HiddenDim // (2 * K_WIDTH),
+                2,
+                16,
+                K_WIDTH,
+            )
+        )
+        .permute((0, 3, 1, 2, 4))
+        .reshape((KVBlockSize, HiddenDim))
+        .permute([1, 0])
+        .load(layout=layout)
+    )
+
+
+@gluon.jit
+def _gfx1250_indexer_block(
+    mfma_q,
+    kv_buf,
+    k_scale,
+    scale_weight,
+    zero_acc,
+    col,
+    context_idx,
+    context_length,
+    next_n,
+    pid_next_n,
+    out_base_off,
+    OutLogits_buffer,
+    max_model_len,
+    KVBlockSize: gl.constexpr,
+    HiddenDim: gl.constexpr,
+    layout_b: gl.constexpr,
+):
+    # One K block: Q@K -> *k_scale -> relu -> *weight -> causal mask ->
+    # reduce over heads -> store logits. k_scale is passed in already loaded
+    # (prefetched a round ahead) so the global load no longer stalls after wmma.
+    mfma_k = _gfx1250_unswizzle_k(kv_buf, KVBlockSize, HiddenDim, layout_b)
+    o = gl.amd.gfx1250.wmma(mfma_q, mfma_k, zero_acc)
+    o = o * k_scale[None, :]
+    o = gl.maximum(o, 0.0)
+    o = o * scale_weight[:, None]
+
+    valid = (context_idx + col) <= (context_length - next_n + pid_next_n)
+    o = tl.where(valid[None, :], o, float("-inf"))
+    logits = gl.reduce(o, axis=0, combine_fn=_sum_combine)
+
+    store_off = context_idx + col
+    gl.amd.cdna3.buffer_store(
+        logits,
+        ptr=OutLogits_buffer,
+        offsets=out_base_off + store_off,
+        mask=(store_off >= 0) & (store_off < max_model_len),
+    )
 
 
 @gluon.jit
@@ -434,7 +512,8 @@ def _gluon_deepgemm_fp8_paged_mqa_logits_preshuffle(
     layout_scale: gl.constexpr = gl.SliceLayout(1, mfma_layout)
 
     if IS_GFX1250:
-        NUM_BUFFERS: gl.constexpr = 2
+        NUM_BUFFERS: gl.constexpr = _GFX1250_NUM_BUFFERS
+        PREFETCH: gl.constexpr = NUM_BUFFERS - 1
         KV_SHARED: gl.constexpr = gl.SwizzledSharedLayout(
             vec=1, per_phase=1, max_phase=1, order=[1, 0]
         )
@@ -487,80 +566,82 @@ def _gluon_deepgemm_fp8_paged_mqa_logits_preshuffle(
         n_blocks = tl.cdiv(split_context_length, KVBlockSize)
         cblk_base = split_context_start // KVBlockSize
         kv_idx_base = kv_indices + pid_batch * max_block_len + cblk_base
+        out_base_off = (pid_batch * next_n + pid_next_n) * stride_out_batch
 
-        # Prologue: kick off the async_load for block 0 into buffer 0.
-        blk_cur = gl.load(kv_idx_base)
-        desc_cur = gl.amd.gfx1250.tdm.make_tensor_descriptor(
-            base=KV_buffer + blk_cur * stride_k_seq,
-            shape=(KVBlockSize, HiddenDim),
-            strides=(HiddenDim, 1),
-            block_shape=(KVBlockSize, HiddenDim),
-            layout=KV_SHARED,
-        )
-        gl.amd.gfx1250.tdm.async_load(desc_cur, [0, 0], kv_shared.index(0))
-
-        for j in range(0, n_blocks):
-            buf = j % NUM_BUFFERS
-            context_idx = split_context_start + j * KVBlockSize
-            blk = blk_cur
-
-            # Prefetch block j+1 into the other buffer before waiting on block j.
-            if j + 1 < n_blocks:
-                blk_cur = gl.load(kv_idx_base + (j + 1))
-                desc_cur = gl.amd.gfx1250.tdm.make_tensor_descriptor(
-                    base=KV_buffer + blk_cur * stride_k_seq,
+        # Prologue: prime PREFETCH (= NUM_BUFFERS - 1) K loads so that up to
+        # PREFETCH TDM loads stay in flight during the steady state, hiding the K
+        # fetch latency behind PREFETCH iterations of compute.
+        for p in gl.static_range(PREFETCH):
+            if p < n_blocks:
+                blk_p = gl.load(kv_idx_base + p)
+                desc_p = gl.amd.gfx1250.tdm.make_tensor_descriptor(
+                    base=KV_buffer + blk_p * stride_k_seq,
                     shape=(KVBlockSize, HiddenDim),
                     strides=(HiddenDim, 1),
                     block_shape=(KVBlockSize, HiddenDim),
                     layout=KV_SHARED,
                 )
                 gl.amd.gfx1250.tdm.async_load(
-                    desc_cur, [0, 0], kv_shared.index((j + 1) % NUM_BUFFERS)
+                    desc_p, [0, 0], kv_shared.index(p % NUM_BUFFERS)
                 )
-                # Leave exactly the just-issued load (block j+1) in flight.
-                gl.amd.gfx1250.tdm.async_wait(1)
+
+        # Prefetch k_scale for block 0 one round ahead so the global load no
+        # longer sits on the critical path right after the wmma.
+        blk0 = gl.load(kv_idx_base)
+        k_scale_cur = gl.amd.cdna3.buffer_load(
+            ptr=scale_buffer,
+            offsets=blk0 * stride_scale_seq + col,
+        )
+
+        for j in range(0, n_blocks):
+            buf = j % NUM_BUFFERS
+            context_idx = split_context_start + j * KVBlockSize
+
+            # Issue the load for block j+PREFETCH and leave PREFETCH loads in
+            # flight; within PREFETCH blocks of the end just drain (no remaining
+            # blocks to prefetch), which costs overlap only on the final tail.
+            if j + PREFETCH < n_blocks:
+                blk_p = gl.load(kv_idx_base + (j + PREFETCH))
+                desc_p = gl.amd.gfx1250.tdm.make_tensor_descriptor(
+                    base=KV_buffer + blk_p * stride_k_seq,
+                    shape=(KVBlockSize, HiddenDim),
+                    strides=(HiddenDim, 1),
+                    block_shape=(KVBlockSize, HiddenDim),
+                    layout=KV_SHARED,
+                )
+                gl.amd.gfx1250.tdm.async_load(
+                    desc_p, [0, 0], kv_shared.index((j + PREFETCH) % NUM_BUFFERS)
+                )
+                gl.amd.gfx1250.tdm.async_wait(PREFETCH)
             else:
                 gl.amd.gfx1250.tdm.async_wait(0)
 
-            K_WIDTH: gl.constexpr = 16
-            mfma_k = (
-                kv_shared.index(buf)
-                .reshape(
-                    (
-                        KVBlockSize // 16,
-                        HiddenDim // (2 * K_WIDTH),
-                        2,
-                        16,
-                        K_WIDTH,
-                    )
+            _gfx1250_indexer_block(
+                mfma_q,
+                kv_shared.index(buf),
+                k_scale_cur,
+                scale_weight,
+                zero_acc,
+                col,
+                context_idx,
+                context_length,
+                next_n,
+                pid_next_n,
+                out_base_off,
+                OutLogits_buffer,
+                max_model_len,
+                KVBlockSize,
+                HiddenDim,
+                mfma_layout_b,
+            )
+
+            # Prefetch next block's k_scale one round ahead.
+            if j + 1 < n_blocks:
+                blk_n = gl.load(kv_idx_base + (j + 1))
+                k_scale_cur = gl.amd.cdna3.buffer_load(
+                    ptr=scale_buffer,
+                    offsets=blk_n * stride_scale_seq + col,
                 )
-                .permute((0, 3, 1, 2, 4))
-                .reshape((KVBlockSize, HiddenDim))
-                .permute([1, 0])
-                .load(layout=mfma_layout_b)
-            )
-            o = gl.amd.gfx1250.wmma(mfma_q, mfma_k, zero_acc)
-
-            k_scale_f = gl.amd.cdna3.buffer_load(
-                ptr=scale_buffer,
-                offsets=blk * stride_scale_seq + col,
-            )
-            o = o * k_scale_f[None, :]
-            o = gl.maximum(o, 0.0)
-            o = o * scale_weight[:, None]
-
-            valid = (context_idx + col) <= (context_length - next_n + pid_next_n)
-            o = tl.where(valid[None, :], o, float("-inf"))
-            logits = gl.reduce(o, axis=0, combine_fn=_sum_combine)
-
-            store_off = context_idx + col
-            gl.amd.cdna3.buffer_store(
-                logits,
-                ptr=OutLogits_buffer,
-                offsets=(pid_batch * next_n + pid_next_n) * stride_out_batch
-                + store_off,
-                mask=(store_off >= 0) & (store_off < max_model_len),
-            )
         return
 
     ContextBlockPerChunkK: gl.constexpr = ChunkK // KVBlockSize
