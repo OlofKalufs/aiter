@@ -43,11 +43,11 @@ void mhc_post(torch::Tensor& out,            // (m, hc_mult, hidden_size)
               torch::Tensor& x,              // (m, hidden_size)
               torch::Tensor& residual,       // (m, hc_mult, hidden_size)
               torch::Tensor& post_layer_mix, // (m, hc_mult)
-              torch::Tensor& comb_res_mix    // (m, hc_mult, hc_mult)
-);
+              torch::Tensor& comb_res_mix,   // (m, hc_mult, hc_mult)
+              int store_nt                   = -1);
 void mhc_fused_post_pre_gemm_sqrsum(
-    torch::Tensor& gemm_out_mul,    // (split_k * hc_mult, m, hc_mult3)
-    torch::Tensor& gemm_out_sqrsum, // (split_k * hc_mult, m)
+    torch::Tensor& gemm_out_mul,    // (split_k, m, hc_mult3)
+    torch::Tensor& gemm_out_sqrsum, // (split_k, m)
     torch::Tensor& next_residual,   // (m, hc_mult, hidden_size)
     torch::Tensor& layer_input,     // (m, hidden_size)
     torch::Tensor& residual_in,     // (m, hc_mult, hidden_size)
