@@ -148,6 +148,7 @@ jobs:
               echo "aiter checkout: $(git rev-parse HEAD)"
               export AITER_USE_SYSTEM_TRITON=1
               export AITER_TRITON_ONLY=1
+              export ENABLE_CK=0
               python3 -m pip uninstall -y amd-aiter aiter || true
               python3 -m pip install -r requirements.txt
               python3 -m pip install -e . --no-build-isolation
