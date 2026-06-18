@@ -35,10 +35,10 @@ BlockwiseKernel blockwise_dispatch(int id)
   // First check if this shape is available in the direct lookup.
   static const auto lookup = []
   {
-    if constexpr (std::is_same_v<CDataType, F16>) {
-        return BlockwiseKernelMap{GENERATE_LOOKUP_TABLE(F16, false)};
-    } else if constexpr (std::is_same_v<CDataType, B16>) {
-        return BlockwiseKernelMap{GENERATE_LOOKUP_TABLE(B16, false)};
+    if constexpr (std::is_same_v<CDataType, TILE_FP16>) {
+        return BlockwiseKernelMap{GENERATE_LOOKUP_TABLE(TILE_FP16, false)};
+    } else if constexpr (std::is_same_v<CDataType, TILE_BF16>) {
+        return BlockwiseKernelMap{GENERATE_LOOKUP_TABLE(TILE_BF16, false)};
     } else {
         static_assert(false, "blockwise_dispatch used with unsupported dtype!");
     } }();
@@ -76,11 +76,11 @@ torch::Tensor gemm_a4w4_blockscale_cktile_tune(
 
   if (Y.dtype() == at::ScalarType::Half)
   {
-    blockwise_dispatch<F16>(kernelId)(XQ, WQ, x_scale, w_scale, Y, splitK);
+    blockwise_dispatch<TILE_FP16>(kernelId)(XQ, WQ, x_scale, w_scale, Y, splitK);
   }
   else if (Y.dtype() == at::ScalarType::BFloat16)
   {
-    blockwise_dispatch<B16>(kernelId)(XQ, WQ, x_scale, w_scale, Y, splitK);
+    blockwise_dispatch<TILE_BF16>(kernelId)(XQ, WQ, x_scale, w_scale, Y, splitK);
   }
   else
   {

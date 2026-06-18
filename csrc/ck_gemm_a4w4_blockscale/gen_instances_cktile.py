@@ -173,17 +173,17 @@ template torch::Tensor
         if self.istune:
             Path(
                 os.path.join(self.instances_path, f"{k.name}_dBF16_eBF16.cpp")
-            ).write_text(INSTANCE_template.format(name=k.name, dtypes="B16, false"))
+            ).write_text(INSTANCE_template.format(name=k.name, dtypes="TILE_BF16, false"))
             Path(
                 os.path.join(self.instances_path, f"{k.name}_dFP32_eFP16.cpp")
-            ).write_text(INSTANCE_template.format(name=k.name, dtypes="F16, false"))
+            ).write_text(INSTANCE_template.format(name=k.name, dtypes="TILE_FP16, false"))
         else:
             Path(
                 os.path.join(self.instances_path, f"{k.name}_dFP32_eBF16.cpp")
-            ).write_text(INSTANCE_template.format(name=k.name, dtypes="B16, true"))
+            ).write_text(INSTANCE_template.format(name=k.name, dtypes="TILE_BF16, true"))
             Path(
                 os.path.join(self.instances_path, f"{k.name}_dFP32_eFP16.cpp")
-            ).write_text(INSTANCE_template.format(name=k.name, dtypes="F16, true"))
+            ).write_text(INSTANCE_template.format(name=k.name, dtypes="TILE_FP16, true"))
 
     def gen_lookup_dict(self, kernels_dict):
         """Generate the dispatch lookup header.
