@@ -147,9 +147,7 @@ jobs:
               mkdir -p /tmp/ffm-tests
               cp -a /workspace/op_tests /tmp/ffm-tests/op_tests
               cd /tmp/ffm-tests
-              export AITER_USE_SYSTEM_TRITON=1
               export AITER_TRITON_ONLY=1
-              export ENABLE_CK=0
               python3 -m pip show amd-aiter
               echo "[SKIP] Keeping Triton from the FFM image."
               python3 -m pip show amd-triton triton || true
