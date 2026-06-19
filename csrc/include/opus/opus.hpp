@@ -1120,6 +1120,7 @@ OPUS_D constexpr auto fp32_to_bf16(const fp32_t& x, number<rm> = {}) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wuninitialized"
 #pragma clang diagnostic ignored "-Wc++20-extensions"
+#if (defined(__gfx942__) || defined(__gfx950__)
 // scalar fp8 <-> fp32 via packed intrinsics (lo slot only). NOT constexpr: clang eagerly rejects non-template
 // constexpr functions containing GPU builtins (__builtin_amdgcn_cvt_*) that can never be compile-time evaluated.
 // Template constexpr (packed variants, OPUS_CAST_DEFINE) survives because the check is deferred to instantiation.
@@ -1132,6 +1133,7 @@ OPUS_D auto fp8_to_fp32(const fp8_t& x) {
     int w = static_cast<int>(__builtin_bit_cast(unsigned char, x));
     return __builtin_amdgcn_cvt_f32_fp8(w, /*byte=*/0);
 }
+#endif
 OPUS_D constexpr auto fp32_to_fp32(const fp32_t& x) { return x; }
 OPUS_D constexpr auto fp32_to_i8(const fp32_t& x) { return static_cast<i8_t>(x); }
 OPUS_D constexpr auto i8_to_fp32(const i8_t& x) { return static_cast<fp32_t>(x); }
@@ -1222,6 +1224,7 @@ template<> struct finfo<e8m0_t> {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wuninitialized"
 #pragma clang diagnostic ignored "-Wc++20-extensions"
+#if (defined(__gfx942__) || defined(__gfx950__)
 template<typename S, index_t sel = 0, std::enable_if_t<std::is_same_v<S, fp32x2_t>, bool> = true>
 OPUS_D constexpr decltype(auto) fp32_to_fp8_packed_x2(const S& s, number<sel> = {}) {
     int w ; w = __builtin_amdgcn_cvt_pk_fp8_f32(s[0], s[1], w, sel);
@@ -1243,7 +1246,8 @@ OPUS_D constexpr decltype(auto) fp8_to_fp32_packed_x4(const S& s) {
     auto x = __builtin_amdgcn_cvt_pk_f32_fp8(bitwise, 0); auto y = __builtin_amdgcn_cvt_pk_f32_fp8(bitwise, 1);
     return fp32x4_t{x[0], x[1], y[0], y[1]};
 }
-
+#endif
+                                                                                 
 namespace impl {
 template<typename S, index_t... Xs>     OPUS_D constexpr decltype(auto) fold_as_tuple_of_vec(const S& s, seq<Xs...>) {
     static_assert(size<S>() % sizeof...(Xs) == 0);
@@ -1392,6 +1396,7 @@ template<typename S, std::enable_if_t<std::is_same_v<S, fp4_t>, bool> = true>   
 #endif
 #pragma clang diagnostic pop
 
+#if (defined(__gfx942__) || defined(__gfx950__)
 template<typename D, typename S, typename... Aux, std::enable_if_t<std::is_same_v<S, fp32x2_t> && std::is_same_v<D, fp8_t>, bool> = true>
 OPUS_D constexpr decltype(auto) cast(const S& s, Aux&&... aux) { return fp32_to_fp8_packed_x2(s, std::forward<Aux>(aux)...); }
 template<typename D, typename S, typename... Aux, std::enable_if_t<std::is_same_v<S, fp32x4_t> && std::is_same_v<D, fp8_t>, bool> = true>
@@ -1400,6 +1405,7 @@ template<typename D, typename S, typename... Aux, std::enable_if_t<std::is_same_
 OPUS_D constexpr decltype(auto) cast(const S& s, Aux&&... aux) { return fp8_to_fp32_packed_x2(s, std::forward<Aux>(aux)...); }
 template<typename D, typename S, typename... Aux, std::enable_if_t<std::is_same_v<S, fp8x4_t> && std::is_same_v<D, fp32_t>, bool> = true>
 OPUS_D constexpr decltype(auto) cast(const S& s, Aux&&... aux) { return fp8_to_fp32_packed_x4(s, std::forward<Aux>(aux)...); }
+#endif
 
 template<typename D, typename S, typename... Aux, std::enable_if_t<std::is_same_v<S, fp32x2_t> && std::is_same_v<D, fp4_t>, bool> = true>
 OPUS_D constexpr decltype(auto) cast(const S& s, Aux&&... aux) { return fp32_to_fp4_packed_x2(s, std::forward<Aux>(aux)...); }
